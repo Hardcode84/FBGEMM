@@ -184,6 +184,17 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
         {%- set d = "(kWarpSize * vec + threadIdx.x) * kVecWidth" %}
     {%- endif %} {# /* if use_vec_blocking */ #}
 
+
+        auto l = 0 + threadIdx.x;
+        auto offset_idx = l < L
+            ? (static_cast<overflow_safe_int_t>(indices[indices_start + l]) * D_emb)
+            : 0;
+        {%- if not dense %}
+        auto {{ locs_or_addrs_idx }} =
+            (placement == PlacementType::MANAGED_CACHING && l < L)
+                ? {{ locs_or_addrs_tensor }}[indices_start + l] : 0;
+        {%- endif %}
+
         // Load gradients
         // TODO: Maybe using a combination of shared memory and registers is
         // better for performance
@@ -195,16 +206,6 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
         }
 
         for (int32_t l_start = 0; l_start < L; l_start += kWarpSize) {
-            auto l = l_start + threadIdx.x;
-            const auto offset_idx = l < L
-                ? (static_cast<overflow_safe_int_t>(indices[indices_start + l]) * D_emb)
-                : 0;
-            {%- if not dense %}
-            const auto {{ locs_or_addrs_idx }} =
-                (placement == PlacementType::MANAGED_CACHING && l < L)
-                    ? {{ locs_or_addrs_tensor }}[indices_start + l] : 0;
-            {%- endif %}
-
             {%- if not ssd %}
             FBGEMM_KERNEL_ERROR_CHECK(
                 1, offset_idx >= 0 && offset_idx < weights_numel, offset_idx
@@ -214,6 +215,15 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
             )
             {%- endif %}
 
+            auto l = l_start + kWarpSize + threadIdx.x;
+            auto offset_idx_next = l < L
+                ? (static_cast<overflow_safe_int_t>(indices[indices_start + l]) * D_emb)
+                : 0;
+            {%- if not dense %}
+            auto {{ locs_or_addrs_idx }}_next =
+                (placement == PlacementType::MANAGED_CACHING && l < L)
+                    ? {{ locs_or_addrs_tensor }}[indices_start + l] : 0;
+            {%- endif %}
             for (auto j = 0; j < kWarpSize && l_start + j < L; ++j) {
                 const auto offset_idx_j = shfl_sync(offset_idx, j);
                 {%- if not dense %}
@@ -264,6 +274,7 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                         weight.acc.w * grad_out[vec].acc.w;
                     {%- endif %}
                 }
+
                 grad_indice_weight =
                     warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight);
                 if (threadIdx.x == 0) {
@@ -282,6 +293,10 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                     {%- endif %}
                 }
             }
+            offset_idx = offset_idx_next;
+            {%- if not dense %}
+            {{ locs_or_addrs_idx }} = {{ locs_or_addrs_idx }}_next;
+            {%- endif %}
         }
     {%- if use_vec_blocking %}
     } // for vec_start
@@ -372,7 +387,7 @@ Tensor {{ mdesc }}_embedding_codegen_grad_indice_weights{{ vdesc }}_cuda(
             TORCH_WARN_ONCE("Running on CDNA architecture");
         }
     #endif
-    
+
     const auto T = D_offsets.size(0) - 1;
     TORCH_CHECK_GT(T, 0);
     // offsets = [B x T  + 1]
