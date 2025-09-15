@@ -78,6 +78,7 @@ DEVICE_INLINE Vec4T<float> dequantize_load(
   return out;
 #else
   CUDA_KERNEL_ASSERT(false);
+  return {};
 #endif
 }
 
@@ -94,6 +95,7 @@ DEVICE_INLINE Vec4T<float> dequantize_load(
   return out;
 #else
   CUDA_KERNEL_ASSERT(false);
+  return {};
 #endif
 }
 
@@ -110,6 +112,7 @@ DEVICE_INLINE Vec4T<at::Half> dequantize_load(
   return out;
 #else
   CUDA_KERNEL_ASSERT(false);
+  return {};
 #endif
 }
 
@@ -126,6 +129,7 @@ DEVICE_INLINE Vec4T<at::Half> dequantize_load(
   return out;
 #else
   CUDA_KERNEL_ASSERT(false);
+  return {};
 #endif
 }
 
