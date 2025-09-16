@@ -214,7 +214,10 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
             )
             {%- endif %}
 
-            for (auto j = 0; j < kWarpSize && l_start + j < L; ++j) {
+            auto stage0 = [&](int j) [[gnu::always_inline]] -> at::acc_type<cache_t, true> {
+                if (l_start + j >= L)
+                    return 0.0;
+
                 const auto offset_idx_j = shfl_sync(offset_idx, j);
                 {%- if not dense %}
                 const auto {{ locs_or_addrs_idx }}_j = shfl_sync({{ locs_or_addrs_idx }}, j);
@@ -264,6 +267,13 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                         weight.acc.w * grad_out[vec].acc.w;
                     {%- endif %}
                 }
+                return grad_indice_weight;
+            };
+
+            auto stage1 = [&](int j, at::acc_type<cache_t, true> grad_indice_weight) [[gnu::always_inline]] {
+                if (l_start + j >= L)
+                    return;
+
                 grad_indice_weight =
                     warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight);
                 if (threadIdx.x == 0) {
@@ -281,6 +291,18 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                         grad_indice_weight;
                     {%- endif %}
                 }
+            };
+
+            for (auto j = 0; j < kWarpSize; j += 4) {
+                auto grad_indice_weight0 = stage0(j + 0);
+                auto grad_indice_weight1 = stage0(j + 1);
+                auto grad_indice_weight2 = stage0(j + 2);
+                auto grad_indice_weight3 = stage0(j + 3);
+
+                stage1(j + 0, grad_indice_weight0);
+                stage1(j + 1, grad_indice_weight1);
+                stage1(j + 2, grad_indice_weight2);
+                stage1(j + 3, grad_indice_weight3);
             }
         }
     {%- if use_vec_blocking %}
@@ -372,7 +394,7 @@ Tensor {{ mdesc }}_embedding_codegen_grad_indice_weights{{ vdesc }}_cuda(
             TORCH_WARN_ONCE("Running on CDNA architecture");
         }
     #endif
-    
+
     const auto T = D_offsets.size(0) - 1;
     TORCH_CHECK_GT(T, 0);
     // offsets = [B x T  + 1]
