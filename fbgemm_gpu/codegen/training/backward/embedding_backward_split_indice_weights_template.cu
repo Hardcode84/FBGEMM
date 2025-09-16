@@ -245,34 +245,44 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                           &lxu_cache_weights[{{ locs_or_addrs_idx }}_j][d]; \
                           {%- endif %}
                         Vec4T<cache_t> weight(cache_weights); \
-                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
-                            weight.acc.y * grad_out[vec].acc.y + \
-                            weight.acc.z * grad_out[vec].acc.z + \
-                            weight.acc.w * grad_out[vec].acc.w; \
+                        result[vec].acc.x = weight.acc.x; \
+                        result[vec].acc.y = weight.acc.y; \
+                        result[vec].acc.z = weight.acc.z; \
+                        result[vec].acc.w = weight.acc.w; \
                     } else { \
                         const auto weight = weight_row.load(d); \
-                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
-                            weight.acc.y * grad_out[vec].acc.y + \
-                            weight.acc.z * grad_out[vec].acc.z + \
-                            weight.acc.w * grad_out[vec].acc.w; \
+                        result[vec].acc.x = weight.acc.x; \
+                        result[vec].acc.y = weight.acc.y; \
+                        result[vec].acc.z = weight.acc.z; \
+                        result[vec].acc.w = weight.acc.w; \
                     } \
                     {%- else %}
                     const auto weight = weight_row.load(d); \
-\
-                    grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
-                        weight.acc.y * grad_out[vec].acc.y + \
-                        weight.acc.z * grad_out[vec].acc.z + \
-                        weight.acc.w * grad_out[vec].acc.w; \
+                    result[vec].acc.x = weight.acc.x; \
+                    result[vec].acc.y = weight.acc.y; \
+                    result[vec].acc.z = weight.acc.z; \
+                    result[vec].acc.w = weight.acc.w; \
                     {%- endif %}
                 } \
-                result = grad_indice_weight; \
             }}
 
             #define STAGE1(j, result) { \
                 if (l_start + j < L) { \
+                at::acc_type<cache_t, true> grad_indice_weight = 0.0; \
+                _Pragma("unroll kFixedMaxVecsPerThread") \
+                for (int32_t vec = 0; \
+                    vec < kFixedMaxVecsPerThread && {{ d }} < D; \
+                    ++vec) { \
+                    auto weight = result[vec]; \
+                    const int32_t d = {{ d }}; \
+                    grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
+                        weight.acc.y * grad_out[vec].acc.y + \
+                        weight.acc.z * grad_out[vec].acc.z + \
+                        weight.acc.w * grad_out[vec].acc.w; \
+                } \
 \
-                auto grad_indice_weight = \
-                    warpReduceAllSum<at::acc_type<cache_t, true>>(result); \
+                grad_indice_weight = \
+                    warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight); \
                 if (threadIdx.x == 0) { \
                     {%- if use_vec_blocking %}
                     if (vec_start == 0) { \
@@ -288,14 +298,13 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                         grad_indice_weight; \
                     {%- endif %}
                 } \
-                result = grad_indice_weight; \
             }}
 
             for (auto jj = 0; jj < kWarpSize; jj += 4) {
-                at::acc_type<cache_t, true> grad_indice_weight0;
-                at::acc_type<cache_t, true> grad_indice_weight1;
-                at::acc_type<cache_t, true> grad_indice_weight2;
-                at::acc_type<cache_t, true> grad_indice_weight3;
+                Vec4T<emb_t> grad_indice_weight0[kFixedMaxVecsPerThread];
+                Vec4T<emb_t> grad_indice_weight1[kFixedMaxVecsPerThread];
+                Vec4T<emb_t> grad_indice_weight2[kFixedMaxVecsPerThread];
+                Vec4T<emb_t> grad_indice_weight3[kFixedMaxVecsPerThread];
                 STAGE0((jj + 0), grad_indice_weight0);
                 STAGE0((jj + 1), grad_indice_weight1);
                 STAGE0((jj + 2), grad_indice_weight2);
