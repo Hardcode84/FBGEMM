@@ -214,96 +214,100 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
             )
             {%- endif %}
 
-            auto stage0 = [&](int j) [[gnu::always_inline]] -> at::acc_type<cache_t, true> {
-                if (l_start + j >= L)
-                    return 0.0;
-
-                const auto offset_idx_j = shfl_sync(offset_idx, j);
+            #define STAGE0(j, result) { \
+            if (l_start + j < L) { \
+                const auto offset_idx_j = shfl_sync(offset_idx, j); \
                 {%- if not dense %}
-                const auto {{ locs_or_addrs_idx }}_j = shfl_sync({{ locs_or_addrs_idx }}, j);
+                const auto {{ locs_or_addrs_idx }}_j = shfl_sync({{ locs_or_addrs_idx }}, j); \
                 {%- endif %}
-
-                at::acc_type<cache_t, true> grad_indice_weight = 0.0;
-                [[maybe_unused]] const auto weight_row =
-                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j], D);
-
-                #pragma unroll kFixedMaxVecsPerThread
-                for (int32_t vec = 0;
-                    vec < kFixedMaxVecsPerThread && {{ d }} < D;
-                    ++vec) {
-                    const int32_t d = {{ d }};
+\
+                at::acc_type<cache_t, true> grad_indice_weight = 0.0; \
+                [[maybe_unused]] const auto weight_row = \
+                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j], D); \
+\
+                _Pragma("unroll kFixedMaxVecsPerThread") \
+                for (int32_t vec = 0; \
+                    vec < kFixedMaxVecsPerThread && {{ d }} < D; \
+                    ++vec) { \
+                    const int32_t d = {{ d }}; \
                     {%- if not dense %}
-                    if ({{ "true || " if ssd else "" }}
-                      (
-                          placement == PlacementType::MANAGED_CACHING
-                          && ({{ locs_or_addrs_idx }}_j != kCacheLocationMissing)
-                      )
-                    ) {
-                        const cache_t* cache_weights =
+                    if ({{ "true || " if ssd else "" }} \
+                      ( \
+                          placement == PlacementType::MANAGED_CACHING \
+                          && ({{ locs_or_addrs_idx }}_j != kCacheLocationMissing) \
+                      ) \
+                    ) { \
+                        const cache_t* cache_weights = \
                           {%- if ssd  %}
-                          reinterpret_cast<cache_t*>(
-                              *reinterpret_cast<const uint64_t*>(&{{ locs_or_addrs_idx }}_j));
+                          reinterpret_cast<cache_t*>( \
+                              *reinterpret_cast<const uint64_t*>(&{{ locs_or_addrs_idx }}_j)); \
                           {%- else %}
-                          &lxu_cache_weights[{{ locs_or_addrs_idx }}_j][d];
+                          &lxu_cache_weights[{{ locs_or_addrs_idx }}_j][d]; \
                           {%- endif %}
-                        Vec4T<cache_t> weight(cache_weights);
-                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
-                            weight.acc.y * grad_out[vec].acc.y +
-                            weight.acc.z * grad_out[vec].acc.z +
-                            weight.acc.w * grad_out[vec].acc.w;
-                    } else {
-                        const auto weight = weight_row.load(d);
-                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
-                            weight.acc.y * grad_out[vec].acc.y +
-                            weight.acc.z * grad_out[vec].acc.z +
-                            weight.acc.w * grad_out[vec].acc.w;
-                    }
+                        Vec4T<cache_t> weight(cache_weights); \
+                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
+                            weight.acc.y * grad_out[vec].acc.y + \
+                            weight.acc.z * grad_out[vec].acc.z + \
+                            weight.acc.w * grad_out[vec].acc.w; \
+                    } else { \
+                        const auto weight = weight_row.load(d); \
+                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
+                            weight.acc.y * grad_out[vec].acc.y + \
+                            weight.acc.z * grad_out[vec].acc.z + \
+                            weight.acc.w * grad_out[vec].acc.w; \
+                    } \
                     {%- else %}
-                    const auto weight = weight_row.load(d);
-
-                    grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
-                        weight.acc.y * grad_out[vec].acc.y +
-                        weight.acc.z * grad_out[vec].acc.z +
-                        weight.acc.w * grad_out[vec].acc.w;
+                    const auto weight = weight_row.load(d); \
+\
+                    grad_indice_weight += weight.acc.x * grad_out[vec].acc.x + \
+                        weight.acc.y * grad_out[vec].acc.y + \
+                        weight.acc.z * grad_out[vec].acc.z + \
+                        weight.acc.w * grad_out[vec].acc.w; \
                     {%- endif %}
-                }
-                return grad_indice_weight;
-            };
+                } \
+                result = grad_indice_weight; \
+            }}
 
-            auto stage1 = [&](int j, at::acc_type<cache_t, true> grad_indice_weight) [[gnu::always_inline]] {
-                if (l_start + j >= L)
-                    return;
-
-                grad_indice_weight =
-                    warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight);
-                if (threadIdx.x == 0) {
+            #define STAGE1(j, result) { \
+                if (l_start + j < L) { \
+\
+                auto grad_indice_weight = \
+                    warpReduceAllSum<at::acc_type<cache_t, true>>(result); \
+                if (threadIdx.x == 0) { \
                     {%- if use_vec_blocking %}
-                    if (vec_start == 0) {
-                        grad_indice_weights[indices_start + l_start + j] =
-                            grad_indice_weight;
-                    }
-                    else {
-                        grad_indice_weights[indices_start + l_start + j] +=
-                            grad_indice_weight;
-                    }
+                    if (vec_start == 0) { \
+                        grad_indice_weights[indices_start + l_start + j] = \
+                            grad_indice_weight; \
+                    } \
+                    else { \
+                        grad_indice_weights[indices_start + l_start + j] += \
+                            grad_indice_weight; \
+                    } \
                     {%- else %}
-                    grad_indice_weights[indices_start + l_start + j] =
-                        grad_indice_weight;
+                    grad_indice_weights[indices_start + l_start + j] = \
+                        grad_indice_weight; \
                     {%- endif %}
-                }
-            };
+                } \
+                result = grad_indice_weight; \
+            }}
 
-            for (auto j = 0; j < kWarpSize; j += 4) {
-                auto grad_indice_weight0 = stage0(j + 0);
-                auto grad_indice_weight1 = stage0(j + 1);
-                auto grad_indice_weight2 = stage0(j + 2);
-                auto grad_indice_weight3 = stage0(j + 3);
+            for (auto jj = 0; jj < kWarpSize; jj += 4) {
+                at::acc_type<cache_t, true> grad_indice_weight0;
+                at::acc_type<cache_t, true> grad_indice_weight1;
+                at::acc_type<cache_t, true> grad_indice_weight2;
+                at::acc_type<cache_t, true> grad_indice_weight3;
+                STAGE0((jj + 0), grad_indice_weight0);
+                STAGE0((jj + 1), grad_indice_weight1);
+                STAGE0((jj + 2), grad_indice_weight2);
+                STAGE0((jj + 3), grad_indice_weight3);
 
-                stage1(j + 0, grad_indice_weight0);
-                stage1(j + 1, grad_indice_weight1);
-                stage1(j + 2, grad_indice_weight2);
-                stage1(j + 3, grad_indice_weight3);
+                STAGE1((jj + 0), grad_indice_weight0);
+                STAGE1((jj + 1), grad_indice_weight1);
+                STAGE1((jj + 2), grad_indice_weight2);
+                STAGE1((jj + 3), grad_indice_weight3);
             }
+            #undef STAGE0
+            #undef STAGE1
         }
     {%- if use_vec_blocking %}
     } // for vec_start
