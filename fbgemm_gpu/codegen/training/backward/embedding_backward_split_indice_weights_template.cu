@@ -269,6 +269,7 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
             }
 
 
+            __builtin_amdgcn_s_waitcnt(3952); // vmcnt(0)
             for (auto j = 0; j < kWarpSize && l_start + j < L; ++j) {
                 const auto offset_idx_j_next = shfl_sync(offset_idx, j + 1);
                 {%- if not dense %}
@@ -320,6 +321,7 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
                 grad_indice_weight =
                     warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight);
+                __builtin_amdgcn_s_waitcnt(3952); // vmcnt(0)
                 if (threadIdx.x == 0) {
                     {%- if use_vec_blocking %}
                     if (vec_start == 0) {
