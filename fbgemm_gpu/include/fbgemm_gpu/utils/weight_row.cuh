@@ -574,4 +574,21 @@ class WeightRowAccessor {
   }
 };
 
+struct half4_my {
+    half x;
+    half y;
+    half z;
+    half w;
+};
+
+template <typename DstT, typename SrcT>
+DEVICE_INLINE DstT convert4(SrcT src) {
+    DstT dst;
+    dst.x = src.x;
+    dst.y = src.y;
+    dst.z = src.z;
+    dst.w = src.w;
+    return dst;
+}
+
 } // namespace fbgemm_gpu

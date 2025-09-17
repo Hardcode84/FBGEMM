@@ -230,10 +230,14 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
             auto {{ locs_or_addrs_idx }}_j = shfl_sync({{ locs_or_addrs_idx }}, 0);
             {%- endif %}
 
+            // using weights_temp_type = std::conditional_t<std::is_same_v<emb_t, c10::Half> || std::is_same_v<emb_t, float>, emb_t, cache_t>;
+            using weights_temp_type = c10::Half;
             [[maybe_unused]] const auto weight_row =
-                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j], D);
+                    WeightRowAccessor<emb_t, weights_temp_type>(&weights[offset_idx_j], D);
 
-            decltype(weight_row.load(0)) weights_temp[kFixedMaxVecsPerThread];
+            // Vec4T<weights_temp_type> weights_temp[kFixedMaxVecsPerThread];
+            using weights4_type = half4_my;
+            weights4_type weights_temp[kFixedMaxVecsPerThread];
 
             #pragma unroll kFixedMaxVecsPerThread
             for (int32_t vec = 0;
@@ -255,12 +259,12 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                     &lxu_cache_weights[{{ locs_or_addrs_idx }}_j][d];
                     {%- endif %}
                     Vec4T<cache_t> weight(cache_weights);
-                    weights_temp[vec].acc = weight.acc;
+                    weights_temp[vec] = convert4<weights4_type>(weight.acc);
                 } else {
-                    weights_temp[vec].acc = weight_row.load(d).acc;
+                    weights_temp[vec] = convert4<weights4_type>(weight_row.load(d).acc);
                 }
                 {%- else %}
-                weights_temp[vec].acc = weight_row.load(d).acc;
+                weights_temp[vec] = convert4<weights4_type>(weight_row.load(d).acc);
                 {%- endif %}
             }
 
@@ -273,9 +277,10 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
                 at::acc_type<cache_t, true> grad_indice_weight = 0.0;
                 [[maybe_unused]] const auto weight_row_next =
-                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j_next], D);
+                    WeightRowAccessor<emb_t, weights_temp_type>(&weights[offset_idx_j_next], D);
 
-                decltype(weight_row.load(0)) weights_next[kFixedMaxVecsPerThread];
+                // Vec4T<weights_temp_type> weights_next[kFixedMaxVecsPerThread];
+                weights4_type weights_next[kFixedMaxVecsPerThread];
 
                 #pragma unroll kFixedMaxVecsPerThread
                 for (int32_t vec = 0;
@@ -298,19 +303,19 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                             &lxu_cache_weights[{{ locs_or_addrs_idx }}_j_next][d];
                             {%- endif %}
                             Vec4T<cache_t> weight(cache_weights);
-                            weights_next[vec].acc = weight.acc;
+                            weights_next[vec] = convert4<weights4_type>(weight.acc);
                         } else {
-                            weights_next[vec].acc = weight_row_next.load(d).acc;
+                            weights_next[vec] = convert4<weights4_type>(weight_row_next.load(d).acc);
                         }
                         {%- else %}
-                        weights_next[vec].acc = weight_row_next.load(d).acc;
+                        weights_next[vec] = convert4<weights4_type>(weight_row_next.load(d).acc);
                         {%- endif %}
                     }
                     auto weight = weights_temp[vec];
-                    grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
-                        weight.acc.y * grad_out[vec].acc.y +
-                        weight.acc.z * grad_out[vec].acc.z +
-                        weight.acc.w * grad_out[vec].acc.w;
+                    grad_indice_weight += (float)weight.x * grad_out[vec].acc.x +
+                        (float)weight.y * grad_out[vec].acc.y +
+                        (float)weight.z * grad_out[vec].acc.z +
+                        (float)weight.w * grad_out[vec].acc.w;
                 }
 
                 grad_indice_weight =
@@ -337,7 +342,7 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
                 #pragma unroll kFixedMaxVecsPerThread
                 for (int32_t vec = 0; vec < kFixedMaxVecsPerThread; ++vec) {
-                    weights_temp[vec].acc = weights_next[vec].acc;
+                    weights_temp[vec] = weights_next[vec];
                 }
             }
             offset_idx = offset_idx_next;
