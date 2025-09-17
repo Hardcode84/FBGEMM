@@ -224,55 +224,93 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                 (placement == PlacementType::MANAGED_CACHING && l < L)
                     ? {{ locs_or_addrs_tensor }}[indices_start + l] : 0;
             {%- endif %}
-            for (auto j = 0; j < kWarpSize && l_start + j < L; ++j) {
-                const auto offset_idx_j = shfl_sync(offset_idx, j);
+
+            auto offset_idx_j = shfl_sync(offset_idx, 0);
+            {%- if not dense %}
+            auto {{ locs_or_addrs_idx }}_j = shfl_sync({{ locs_or_addrs_idx }}, 0);
+            {%- endif %}
+
+            [[maybe_unused]] const auto weight_row =
+                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j], D);
+
+            decltype(weight_row.load(0)) weights_temp[kFixedMaxVecsPerThread];
+
+            #pragma unroll kFixedMaxVecsPerThread
+            for (int32_t vec = 0;
+                vec < kFixedMaxVecsPerThread && {{ d }} < D;
+                ++vec) {
+                const int32_t d = {{ d }};
                 {%- if not dense %}
-                const auto {{ locs_or_addrs_idx }}_j = shfl_sync({{ locs_or_addrs_idx }}, j);
+                if ({{ "true || " if ssd else "" }}
+                    (
+                        placement == PlacementType::MANAGED_CACHING
+                        && ({{ locs_or_addrs_idx }}_j != kCacheLocationMissing)
+                    )
+                ) {
+                    const cache_t* cache_weights =
+                    {%- if ssd  %}
+                    reinterpret_cast<cache_t*>(
+                        *reinterpret_cast<const uint64_t*>(&{{ locs_or_addrs_idx }}_j));
+                    {%- else %}
+                    &lxu_cache_weights[{{ locs_or_addrs_idx }}_j][d];
+                    {%- endif %}
+                    Vec4T<cache_t> weight(cache_weights);
+                    weights_temp[vec].acc = weight.acc;
+                } else {
+                    weights_temp[vec].acc = weight_row.load(d).acc;
+                }
+                {%- else %}
+                weights_temp[vec].acc = weight_row.load(d).acc;
+                {%- endif %}
+            }
+
+
+            for (auto j = 0; j < kWarpSize && l_start + j < L; ++j) {
+                const auto offset_idx_j_next = shfl_sync(offset_idx, j + 1);
+                {%- if not dense %}
+                const auto {{ locs_or_addrs_idx }}_j_next = shfl_sync({{ locs_or_addrs_idx }}, j + 1);
                 {%- endif %}
 
                 at::acc_type<cache_t, true> grad_indice_weight = 0.0;
-                [[maybe_unused]] const auto weight_row =
-                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j], D);
+                [[maybe_unused]] const auto weight_row_next =
+                    WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j_next], D);
+
+                decltype(weight_row.load(0)) weights_next[kFixedMaxVecsPerThread];
 
                 #pragma unroll kFixedMaxVecsPerThread
                 for (int32_t vec = 0;
                     vec < kFixedMaxVecsPerThread && {{ d }} < D;
                     ++vec) {
                     const int32_t d = {{ d }};
-                    {%- if not dense %}
-                    if ({{ "true || " if ssd else "" }}
-                      (
-                          placement == PlacementType::MANAGED_CACHING
-                          && ({{ locs_or_addrs_idx }}_j != kCacheLocationMissing)
-                      )
-                    ) {
-                        const cache_t* cache_weights =
-                          {%- if ssd  %}
-                          reinterpret_cast<cache_t*>(
-                              *reinterpret_cast<const uint64_t*>(&{{ locs_or_addrs_idx }}_j));
-                          {%- else %}
-                          &lxu_cache_weights[{{ locs_or_addrs_idx }}_j][d];
-                          {%- endif %}
-                        Vec4T<cache_t> weight(cache_weights);
-                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
-                            weight.acc.y * grad_out[vec].acc.y +
-                            weight.acc.z * grad_out[vec].acc.z +
-                            weight.acc.w * grad_out[vec].acc.w;
-                    } else {
-                        const auto weight = weight_row.load(d);
-                        grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
-                            weight.acc.y * grad_out[vec].acc.y +
-                            weight.acc.z * grad_out[vec].acc.z +
-                            weight.acc.w * grad_out[vec].acc.w;
+                    if (j < kWarpSize - 1 && l_start + j < L - 1) {
+                        {%- if not dense %}
+                        if ({{ "true || " if ssd else "" }}
+                        (
+                            placement == PlacementType::MANAGED_CACHING
+                            && ({{ locs_or_addrs_idx }}_j_next != kCacheLocationMissing)
+                        )
+                        ) {
+                            const cache_t* cache_weights =
+                            {%- if ssd  %}
+                            reinterpret_cast<cache_t*>(
+                                *reinterpret_cast<const uint64_t*>(&{{ locs_or_addrs_idx }}_j_next));
+                            {%- else %}
+                            &lxu_cache_weights[{{ locs_or_addrs_idx }}_j_next][d];
+                            {%- endif %}
+                            Vec4T<cache_t> weight(cache_weights);
+                            weights_next[vec].acc = weight.acc;
+                        } else {
+                            weights_next[vec].acc = weight_row_next.load(d).acc;
+                        }
+                        {%- else %}
+                        weights_next[vec].acc = weight_row_next.load(d).acc;
+                        {%- endif %}
                     }
-                    {%- else %}
-                    const auto weight = weight_row.load(d);
-
+                    auto weight = weights_temp[vec];
                     grad_indice_weight += weight.acc.x * grad_out[vec].acc.x +
                         weight.acc.y * grad_out[vec].acc.y +
                         weight.acc.z * grad_out[vec].acc.z +
                         weight.acc.w * grad_out[vec].acc.w;
-                    {%- endif %}
                 }
 
                 grad_indice_weight =
@@ -291,6 +329,15 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                     grad_indice_weights[indices_start + l_start + j] =
                         grad_indice_weight;
                     {%- endif %}
+                }
+                offset_idx_j = offset_idx_j_next;
+                {%- if not dense %}
+                {{ locs_or_addrs_idx }}_j = {{ locs_or_addrs_idx }}_j_next;
+                {%- endif %}
+
+                #pragma unroll kFixedMaxVecsPerThread
+                for (int32_t vec = 0; vec < kFixedMaxVecsPerThread; ++vec) {
+                    weights_temp[vec].acc = weights_next[vec].acc;
                 }
             }
             offset_idx = offset_idx_next;
