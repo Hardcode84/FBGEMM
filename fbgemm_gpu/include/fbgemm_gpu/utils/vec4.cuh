@@ -11,6 +11,7 @@
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include "fbgemm_gpu/utils/float.cuh"
+#include "fbgemm_gpu/rocm/split_embeddings_common.h"
 
 namespace fbgemm_gpu {
 
@@ -80,6 +81,14 @@ struct Vec4T<float> : public Vec4BaseT<float> {
 
   DEVICE_INLINE void load(const at::Half* p) {
 #ifdef USE_ROCM
+  #if 1 // buffer
+    int32x4_t buff = fbgemm_gpu::rocm::amdgcn_make_buffer_resource(p);
+    half2 ah = fbgemm_gpu::rocm::llvm_amdgcn_raw_buffer_load_fp16x2(buff, 0, 0, 0);
+    half2 bh = fbgemm_gpu::rocm::llvm_amdgcn_raw_buffer_load_fp16x2(buff, sizeof(half2), 0, 0);
+
+    float2 a = __half22float2(ah);
+    float2 b = __half22float2(bh);
+  #else
     union U {
       half2 h[2];
       uint2 ui;
@@ -91,6 +100,7 @@ struct Vec4T<float> : public Vec4BaseT<float> {
     float2 a = __half22float2(tmp_out.h[0]);
     float2 b = __half22float2(tmp_out.h[1]);
 
+  #endif // buffer
     acc.x = a.x;
     acc.y = a.y;
     acc.z = b.x;
@@ -270,6 +280,15 @@ struct Vec4T<at::Half> : public Vec4BaseT<at::Half> {
 
   DEVICE_INLINE void load(const at::Half* p) {
 #ifdef USE_ROCM
+
+  #if 1 // buffer
+    int32x4_t buff = fbgemm_gpu::rocm::amdgcn_make_buffer_resource(p);
+    half2 ah = fbgemm_gpu::rocm::llvm_amdgcn_raw_buffer_load_fp16x2(buff, 0, 0, 0);
+    half2 bh = fbgemm_gpu::rocm::llvm_amdgcn_raw_buffer_load_fp16x2(buff, sizeof(half2), 0, 0);
+
+    float2 a = __half22float2(ah);
+    float2 b = __half22float2(bh);
+  #else
     union U {
       half2 h[2];
       uint2 ui;
@@ -281,10 +300,12 @@ struct Vec4T<at::Half> : public Vec4BaseT<at::Half> {
     float2 a = __half22float2(tmp_out.h[0]);
     float2 b = __half22float2(tmp_out.h[1]);
 
+  #endif // buffer
     acc.x = a.x;
     acc.y = a.y;
     acc.z = b.x;
     acc.w = b.y;
+
 #else
     Half4 out;
 #if CUDA_VERSION >= 9000
@@ -471,6 +492,14 @@ struct Vec4T<at::BFloat16> : public Vec4BaseT<at::BFloat16> {
 
   DEVICE_INLINE void load(const at::Half* p) {
 #ifdef USE_ROCM
+  #if 1 // buffer
+    int32x4_t buff = fbgemm_gpu::rocm::amdgcn_make_buffer_resource(p);
+    half2 ah = fbgemm_gpu::rocm::llvm_amdgcn_raw_buffer_load_fp16x2(buff, 0, 0, 0);
+    half2 bh = fbgemm_gpu::rocm::llvm_amdgcn_raw_buffer_load_fp16x2(buff, sizeof(half2), 0, 0);
+
+    float2 a = __half22float2(ah);
+    float2 b = __half22float2(bh);
+  #else
     union U {
       half2 h[2];
       uint2 ui;
@@ -482,6 +511,7 @@ struct Vec4T<at::BFloat16> : public Vec4BaseT<at::BFloat16> {
     float2 a = __half22float2(tmp_out.h[0]);
     float2 b = __half22float2(tmp_out.h[1]);
 
+  #endif // buffer
     acc.x = a.x;
     acc.y = a.y;
     acc.z = b.x;
