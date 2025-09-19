@@ -285,13 +285,15 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                             const int32_t d = (kWarpSize * vec + threadIdx.x) * kVecWidth;
 
                             Vec4T<at::acc_type<cache_t, true>> weight0 = weight_row0.dequantize_raw(weight_row0_raw[vec]);
-                            Vec4T<at::acc_type<cache_t, true>> weight1 = weight_row1.dequantize_raw(weight_row1_raw[vec]);
-                            Vec4T<at::acc_type<cache_t, true>> weight2 = weight_row2.dequantize_raw(weight_row2_raw[vec]);
-                            Vec4T<at::acc_type<cache_t, true>> weight3 = weight_row3.dequantize_raw(weight_row3_raw[vec]);
-
                             weight_row0_raw[vec] = weight_row0.load_raw(d);
+
+                            Vec4T<at::acc_type<cache_t, true>> weight1 = weight_row1.dequantize_raw(weight_row1_raw[vec]);
                             weight_row1_raw[vec] = weight_row1.load_raw(d);
+
+                            Vec4T<at::acc_type<cache_t, true>> weight2 = weight_row2.dequantize_raw(weight_row2_raw[vec]);
                             weight_row2_raw[vec] = weight_row2.load_raw(d);
+
+                            Vec4T<at::acc_type<cache_t, true>> weight3 = weight_row3.dequantize_raw(weight_row3_raw[vec]);
                             weight_row3_raw[vec] = weight_row3.load_raw(d);
 
                             grad_indice_weight0 += weight0.acc.x * grad_out[vec].acc.x + weight0.acc.y * grad_out[vec].acc.y +
