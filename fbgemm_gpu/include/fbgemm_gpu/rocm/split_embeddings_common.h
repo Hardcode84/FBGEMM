@@ -85,6 +85,34 @@ __device__ half2 llvm_amdgcn_raw_buffer_load_fp16x2(
       __asm("llvm.amdgcn.raw.buffer.load.v2f16");
 #endif
 
+template <typename T>
+__device__ T llvm_amdgcn_raw_buffer_load_impl(
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc);
+
+template <>
+__device__ int64_t llvm_amdgcn_raw_buffer_load_impl<int64_t>(
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.load.i64");
+
+template <>
+__device__ int32_t llvm_amdgcn_raw_buffer_load_impl<int32_t>(
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.load.i32");
+
+template <typename T>
+inline __device__ std::decay_t<T> llvm_amdgcn_raw_buffer_load(
+  int32x4_t srsrc,
+  int32_t voffset) {
+    return llvm_amdgcn_raw_buffer_load_impl<std::decay_t<T>>(srsrc, voffset * sizeof(T), 0, 0);
+}
+
 __device__ void llvm_amdgcn_raw_buffer_store_fp32(
     float vdata,
     int32x4_t rsrc,

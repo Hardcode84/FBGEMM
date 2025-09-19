@@ -22,6 +22,7 @@
 #include "fbgemm_gpu/utils/tensor_utils.h"
 #include "fbgemm_gpu/utils/assert_macros.h"
 #include "fbgemm_gpu/utils/kernel_launcher.cuh"
+#include "fbgemm_gpu/rocm/split_embeddings_common.h"
 
 {%- if is_rocm %}
 #include "fbgemm_gpu/rocm/cdna_guard.h"
@@ -106,7 +107,7 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
     int64_t error_value;
 
     int32_t T = D_offsets.size(0) - 1;
-    auto b_t = blockIdx.x * blockDim.y + threadIdx.y;
+    const auto b_t = __builtin_amdgcn_readfirstlane(blockIdx.x * blockDim.y + threadIdx.y);
     if (b_t >= offsets.size(0) - 1) {
         return;
     }
@@ -130,8 +131,8 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
     if constexpr (std::is_same_v<emb_t, uint8_t>) {
       D_emb += kINT8QparamsBytes;
     }
-    const auto indices_start = offsets[b_t];
-    const auto indices_end = offsets[b_t + 1];
+    const auto indices_start = __builtin_amdgcn_readfirstlane(offsets[b_t]);
+    const auto indices_end = __builtin_amdgcn_readfirstlane(offsets[b_t + 1]);
     const auto L = indices_end - indices_start;
     if (feature_requires_grad.size(0) > 0 && !feature_requires_grad[t]) {
         // If the table does not require gradient computation, we set the gradient to zero.
@@ -174,6 +175,13 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
     Vec4TAcc<cache_t> grad_out[kFixedMaxVecsPerThread];
 
+    using namespace fbgemm_gpu::rocm;
+    int32x4_t indices_buffer = amdgcn_make_buffer_resource(&indices[indices_start]);
+    {%- if not dense %}
+    int32x4_t {{ locs_or_addrs_tensor }}_buffer = amdgcn_make_buffer_resource(&{{ locs_or_addrs_tensor }}[indices_start]);
+    using locs_t = {{ locs_or_addrs_type }};
+    {%- endif %}
+
     {%- if use_vec_blocking %}
     const int32_t num_vecs = div_round_up(D, kWarpSize * kVecWidth);
     for (int32_t vec_start = 0;
@@ -197,12 +205,14 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
         for (int32_t l_start = 0; l_start < L; l_start += kWarpSize) {
             auto l = l_start + threadIdx.x;
             const auto offset_idx = l < L
-                ? (static_cast<overflow_safe_int_t>(indices[indices_start + l]) * D_emb)
+            ? (static_cast<overflow_safe_int_t>(llvm_amdgcn_raw_buffer_load<index_t>(indices_buffer, l)) * D_emb)
+                // ? (static_cast<overflow_safe_int_t>(indices[indices_start + l]) * D_emb)
                 : 0;
             {%- if not dense %}
             const auto {{ locs_or_addrs_idx }} =
                 (placement == PlacementType::MANAGED_CACHING && l < L)
-                    ? {{ locs_or_addrs_tensor }}[indices_start + l] : 0;
+                    ? llvm_amdgcn_raw_buffer_load<locs_t>({{ locs_or_addrs_tensor }}_buffer, l) : 0;
+                    // ? {{ locs_or_addrs_tensor }}[indices_start + l] : 0;
             {%- endif %}
 
             {%- if not ssd %}
@@ -372,7 +382,7 @@ Tensor {{ mdesc }}_embedding_codegen_grad_indice_weights{{ vdesc }}_cuda(
             TORCH_WARN_ONCE("Running on CDNA architecture");
         }
     #endif
-    
+
     const auto T = D_offsets.size(0) - 1;
     TORCH_CHECK_GT(T, 0);
     // offsets = [B x T  + 1]
