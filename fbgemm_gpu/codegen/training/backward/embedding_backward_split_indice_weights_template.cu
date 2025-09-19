@@ -216,7 +216,7 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
             int32_t j = 0;
             {%- if not ssd and not dense and not use_vec_blocking and not vbe %}
-            if constexpr (sizeof(emb_t) >= 2) {
+            if (placement != PlacementType::MANAGED_CACHING) {
                 using raw_t =  WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>::raw_load_t;
                 raw_t weight_row0_raw[kFixedMaxVecsPerThread];
                 raw_t weight_row1_raw[kFixedMaxVecsPerThread];
@@ -249,28 +249,11 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                     const int32_t d = (kWarpSize * vec + threadIdx.x) * kVecWidth;
 
                     Vec4T<at::acc_type<cache_t, true>> weight0, weight1, weight2, weight3;
-                    if (placement == PlacementType::MANAGED_CACHING) {
-                        weight_row0_raw[vec] = (cache_idx_j0 != kCacheLocationMissing) ?
-                        weight_row0.load_raw_ptr(&lxu_cache_weights[cache_idx_j0][d]) :
-                        weight_row0.load_raw(d);
 
-                        weight_row1_raw[vec] = (cache_idx_j1 != kCacheLocationMissing) ?
-                        weight_row1.load_raw_ptr(&lxu_cache_weights[cache_idx_j1][d]) :
-                        weight_row1.load_raw(d);
-
-                        weight_row2_raw[vec] = (cache_idx_j2 != kCacheLocationMissing) ?
-                        weight_row2.load_raw_ptr(&lxu_cache_weights[cache_idx_j2][d]) :
-                        weight_row2.load_raw(d);
-
-                        weight_row3_raw[vec] = (cache_idx_j3 != kCacheLocationMissing) ?
-                        weight_row3.load_raw_ptr(&lxu_cache_weights[cache_idx_j3][d]) :
-                        weight_row3.load_raw(d);
-                    } else {
-                        weight_row0_raw[vec] = weight_row0.load_raw(d);
-                        weight_row1_raw[vec] = weight_row1.load_raw(d);
-                        weight_row2_raw[vec] = weight_row2.load_raw(d);
-                        weight_row3_raw[vec] = weight_row3.load_raw(d);
-                    }
+                    weight_row0_raw[vec] = weight_row0.load_raw(d);
+                    weight_row1_raw[vec] = weight_row1.load_raw(d);
+                    weight_row2_raw[vec] = weight_row2.load_raw(d);
+                    weight_row3_raw[vec] = weight_row3.load_raw(d);
                 }
 
                 // Currently for split_embedding_codegen_grad_indice_weights_kernel only
@@ -305,28 +288,11 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                             Vec4T<at::acc_type<cache_t, true>> weight1 = weight_row1.dequantize_raw(weight_row1_raw[vec]);
                             Vec4T<at::acc_type<cache_t, true>> weight2 = weight_row2.dequantize_raw(weight_row2_raw[vec]);
                             Vec4T<at::acc_type<cache_t, true>> weight3 = weight_row3.dequantize_raw(weight_row3_raw[vec]);
-                            if (placement == PlacementType::MANAGED_CACHING) {
-                                weight_row0_raw[vec] = (cache_idx_j0 != kCacheLocationMissing) ?
-                                weight_row0.load_raw_ptr(&lxu_cache_weights[cache_idx_j0][d]) :
-                                weight_row0.load_raw(d);
 
-                                weight_row0_raw[vec] = (cache_idx_j1 != kCacheLocationMissing) ?
-                                weight_row1.load_raw_ptr(&lxu_cache_weights[cache_idx_j1][d]) :
-                                weight_row1.load_raw(d);
-
-                                weight_row0_raw[vec] = (cache_idx_j2 != kCacheLocationMissing) ?
-                                weight_row2.load_raw_ptr(&lxu_cache_weights[cache_idx_j2][d]) :
-                                weight_row2.load_raw(d);
-
-                                weight_row0_raw[vec] = (cache_idx_j3 != kCacheLocationMissing) ?
-                                weight_row3.load_raw_ptr(&lxu_cache_weights[cache_idx_j3][d]) :
-                                weight_row3.load_raw(d);
-                            } else {
-                                weight_row0_raw[vec] = weight_row0.load_raw(d);
-                                weight_row1_raw[vec] = weight_row1.load_raw(d);
-                                weight_row2_raw[vec] = weight_row2.load_raw(d);
-                                weight_row3_raw[vec] = weight_row3.load_raw(d);
-                            }
+                            weight_row0_raw[vec] = weight_row0.load_raw(d);
+                            weight_row1_raw[vec] = weight_row1.load_raw(d);
+                            weight_row2_raw[vec] = weight_row2.load_raw(d);
+                            weight_row3_raw[vec] = weight_row3.load_raw(d);
 
                             grad_indice_weight0 += weight0.acc.x * grad_out[vec].acc.x + weight0.acc.y * grad_out[vec].acc.y +
                                     weight0.acc.z * grad_out[vec].acc.z + weight0.acc.w * grad_out[vec].acc.w;
