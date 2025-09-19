@@ -216,8 +216,14 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
             int32_t j = 0;
             {%- if not ssd and not dense and not use_vec_blocking and not vbe %}
-            // Currently for split_embedding_codegen_grad_indice_weights_kernel only
-            for (; j < kWarpSize && l_start + j + 3 < L; j += 4) {
+            if constexpr (sizeof(emb_t) >= 2) {
+                using raw_t =  WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>::raw_load_t;
+                raw_t weight_row0_raw[kFixedMaxVecsPerThread];
+                raw_t weight_row1_raw[kFixedMaxVecsPerThread];
+                raw_t weight_row2_raw[kFixedMaxVecsPerThread];
+                raw_t weight_row3_raw[kFixedMaxVecsPerThread];
+
+                // Prefetch the weights
                 const auto offset_idx_j0 = shfl_sync(offset_idx, j);
                 const auto offset_idx_j1 = shfl_sync(offset_idx, j+1);
                 const auto offset_idx_j2 = shfl_sync(offset_idx, j+2);
@@ -233,10 +239,10 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                 at::acc_type<cache_t, true> grad_indice_weight2 = 0.0;
                 at::acc_type<cache_t, true> grad_indice_weight3 = 0.0;
 
-                [[maybe_unused]] const auto weight_row0 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j0], D);
-                [[maybe_unused]] const auto weight_row1 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j1], D);
-                [[maybe_unused]] const auto weight_row2 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j2], D);
-                [[maybe_unused]] const auto weight_row3 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j3], D);
+                const auto weight_row0 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j0], D);
+                const auto weight_row1 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j1], D);
+                const auto weight_row2 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j2], D);
+                const auto weight_row3 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j3], D);
 
                 #pragma unroll kFixedMaxVecsPerThread
                 for (int32_t vec = 0; vec < kFixedMaxVecsPerThread && (kWarpSize * vec + threadIdx.x) * kVecWidth < D; ++vec) {
@@ -244,48 +250,179 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
 
                     Vec4T<at::acc_type<cache_t, true>> weight0, weight1, weight2, weight3;
                     if (placement == PlacementType::MANAGED_CACHING) {
-                        weight0 = (cache_idx_j0 != kCacheLocationMissing) ?
-                        Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j0][d]) :
-                        weight_row0.load(d);
+                        weight_row0_raw[vec] = (cache_idx_j0 != kCacheLocationMissing) ?
+                        weight_row0.load_raw_ptr(&lxu_cache_weights[cache_idx_j0][d]) :
+                        weight_row0.load_raw(d);
 
-                        weight1 = (cache_idx_j1 != kCacheLocationMissing) ?
-                        Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j1][d]) :
-                        weight_row1.load(d);
+                        weight_row1_raw[vec] = (cache_idx_j1 != kCacheLocationMissing) ?
+                        weight_row1.load_raw_ptr(&lxu_cache_weights[cache_idx_j1][d]) :
+                        weight_row1.load_raw(d);
 
-                        weight2 = (cache_idx_j2 != kCacheLocationMissing) ?
-                        Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j2][d]) :
-                        weight_row2.load(d);
+                        weight_row2_raw[vec] = (cache_idx_j2 != kCacheLocationMissing) ?
+                        weight_row2.load_raw_ptr(&lxu_cache_weights[cache_idx_j2][d]) :
+                        weight_row2.load_raw(d);
 
-                        weight3 = (cache_idx_j3 != kCacheLocationMissing) ?
-                        Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j3][d]) :
-                        weight_row3.load(d);
+                        weight_row3_raw[vec] = (cache_idx_j3 != kCacheLocationMissing) ?
+                        weight_row3.load_raw_ptr(&lxu_cache_weights[cache_idx_j3][d]) :
+                        weight_row3.load_raw(d);
                     } else {
-                        weight0 = weight_row0.load(d);
-                        weight1 = weight_row1.load(d);
-                        weight2 = weight_row2.load(d);
-                        weight3 = weight_row3.load(d);
+                        weight_row0_raw[vec] = weight_row0.load_raw(d);
+                        weight_row1_raw[vec] = weight_row1.load_raw(d);
+                        weight_row2_raw[vec] = weight_row2.load_raw(d);
+                        weight_row3_raw[vec] = weight_row3.load_raw(d);
+                    }
+                }
+
+                // Currently for split_embedding_codegen_grad_indice_weights_kernel only
+                for (; j < kWarpSize && l_start + j + 3 < L; j += 4) {
+                    auto jj = j + 4;
+                    const auto offset_idx_j0 = shfl_sync(offset_idx, jj);
+                    const auto offset_idx_j1 = shfl_sync(offset_idx, j+1);
+                    const auto offset_idx_j2 = shfl_sync(offset_idx, jj+2);
+                    const auto offset_idx_j3 = shfl_sync(offset_idx, jj+3);
+
+                    const auto cache_idx_j0 = shfl_sync(cache_idx, jj);
+                    const auto cache_idx_j1 = shfl_sync(cache_idx, jj+1);
+                    const auto cache_idx_j2 = shfl_sync(cache_idx, jj+2);
+                    const auto cache_idx_j3 = shfl_sync(cache_idx, jj+3);
+
+                    at::acc_type<cache_t, true> grad_indice_weight0 = 0.0;
+                    at::acc_type<cache_t, true> grad_indice_weight1 = 0.0;
+                    at::acc_type<cache_t, true> grad_indice_weight2 = 0.0;
+                    at::acc_type<cache_t, true> grad_indice_weight3 = 0.0;
+
+                    const auto weight_row0 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j0], D);
+                    const auto weight_row1 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j1], D);
+                    const auto weight_row2 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j2], D);
+                    const auto weight_row3 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j3], D);
+
+                    if (jj < kWarpSize && l_start + jj + 3 < L) {
+                        #pragma unroll kFixedMaxVecsPerThread
+                        for (int32_t vec = 0; vec < kFixedMaxVecsPerThread && (kWarpSize * vec + threadIdx.x) * kVecWidth < D; ++vec) {
+                            const int32_t d = (kWarpSize * vec + threadIdx.x) * kVecWidth;
+
+                            Vec4T<at::acc_type<cache_t, true>> weight0 = weight_row0.dequantize_raw(weight_row0_raw[vec]);
+                            Vec4T<at::acc_type<cache_t, true>> weight1 = weight_row1.dequantize_raw(weight_row1_raw[vec]);
+                            Vec4T<at::acc_type<cache_t, true>> weight2 = weight_row2.dequantize_raw(weight_row2_raw[vec]);
+                            Vec4T<at::acc_type<cache_t, true>> weight3 = weight_row3.dequantize_raw(weight_row3_raw[vec]);
+                            if (placement == PlacementType::MANAGED_CACHING) {
+                                weight_row0_raw[vec] = (cache_idx_j0 != kCacheLocationMissing) ?
+                                weight_row0.load_raw_ptr(&lxu_cache_weights[cache_idx_j0][d]) :
+                                weight_row0.load_raw(d);
+
+                                weight_row0_raw[vec] = (cache_idx_j1 != kCacheLocationMissing) ?
+                                weight_row1.load_raw_ptr(&lxu_cache_weights[cache_idx_j1][d]) :
+                                weight_row1.load_raw(d);
+
+                                weight_row0_raw[vec] = (cache_idx_j2 != kCacheLocationMissing) ?
+                                weight_row2.load_raw_ptr(&lxu_cache_weights[cache_idx_j2][d]) :
+                                weight_row2.load_raw(d);
+
+                                weight_row0_raw[vec] = (cache_idx_j3 != kCacheLocationMissing) ?
+                                weight_row3.load_raw_ptr(&lxu_cache_weights[cache_idx_j3][d]) :
+                                weight_row3.load_raw(d);
+                            } else {
+                                weight_row0_raw[vec] = weight_row0.load_raw(d);
+                                weight_row1_raw[vec] = weight_row1.load_raw(d);
+                                weight_row2_raw[vec] = weight_row2.load_raw(d);
+                                weight_row3_raw[vec] = weight_row3.load_raw(d);
+                            }
+
+                            grad_indice_weight0 += weight0.acc.x * grad_out[vec].acc.x + weight0.acc.y * grad_out[vec].acc.y +
+                                    weight0.acc.z * grad_out[vec].acc.z + weight0.acc.w * grad_out[vec].acc.w;
+                            grad_indice_weight1 += weight1.acc.x * grad_out[vec].acc.x + weight1.acc.y * grad_out[vec].acc.y +
+                                weight1.acc.z * grad_out[vec].acc.z + weight1.acc.w * grad_out[vec].acc.w;
+                            grad_indice_weight2 += weight2.acc.x * grad_out[vec].acc.x + weight2.acc.y * grad_out[vec].acc.y +
+                                weight2.acc.z * grad_out[vec].acc.z + weight2.acc.w * grad_out[vec].acc.w;
+                            grad_indice_weight3 += weight3.acc.x * grad_out[vec].acc.x + weight3.acc.y * grad_out[vec].acc.y +
+                                weight3.acc.z * grad_out[vec].acc.z + weight3.acc.w * grad_out[vec].acc.w;
+                        }
                     }
 
-                    grad_indice_weight0 += weight0.acc.x * grad_out[vec].acc.x + weight0.acc.y * grad_out[vec].acc.y +
-                            weight0.acc.z * grad_out[vec].acc.z + weight0.acc.w * grad_out[vec].acc.w;
-                    grad_indice_weight1 += weight1.acc.x * grad_out[vec].acc.x + weight1.acc.y * grad_out[vec].acc.y +
-                        weight1.acc.z * grad_out[vec].acc.z + weight1.acc.w * grad_out[vec].acc.w;
-                    grad_indice_weight2 += weight2.acc.x * grad_out[vec].acc.x + weight2.acc.y * grad_out[vec].acc.y +
-                        weight2.acc.z * grad_out[vec].acc.z + weight2.acc.w * grad_out[vec].acc.w;
-                    grad_indice_weight3 += weight3.acc.x * grad_out[vec].acc.x + weight3.acc.y * grad_out[vec].acc.y +
-                        weight3.acc.z * grad_out[vec].acc.z + weight3.acc.w * grad_out[vec].acc.w;
-                }
-                
-                grad_indice_weight0 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight0);
-                grad_indice_weight1 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight1);
-                grad_indice_weight2 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight2);
-                grad_indice_weight3 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight3);
+                    grad_indice_weight0 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight0);
+                    grad_indice_weight1 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight1);
+                    grad_indice_weight2 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight2);
+                    grad_indice_weight3 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight3);
 
-                if (threadIdx.x == 0) {
-                    grad_indice_weights[indices_start + l_start + j] = grad_indice_weight0;
-                    grad_indice_weights[indices_start + l_start + j+1] = grad_indice_weight1;
-                    grad_indice_weights[indices_start + l_start + j+2] = grad_indice_weight2;
-                    grad_indice_weights[indices_start + l_start + j+3] = grad_indice_weight3;
+                    if (threadIdx.x == 0) {
+                        grad_indice_weights[indices_start + l_start + j] = grad_indice_weight0;
+                        grad_indice_weights[indices_start + l_start + j+1] = grad_indice_weight1;
+                        grad_indice_weights[indices_start + l_start + j+2] = grad_indice_weight2;
+                        grad_indice_weights[indices_start + l_start + j+3] = grad_indice_weight3;
+                    }
+                }
+            } else { // (sizeof(emb_t) < 2)
+                // Currently for split_embedding_codegen_grad_indice_weights_kernel only
+                for (; j < kWarpSize && l_start + j + 3 < L; j += 4) {
+                    const auto offset_idx_j0 = shfl_sync(offset_idx, j);
+                    const auto offset_idx_j1 = shfl_sync(offset_idx, j+1);
+                    const auto offset_idx_j2 = shfl_sync(offset_idx, j+2);
+                    const auto offset_idx_j3 = shfl_sync(offset_idx, j+3);
+
+                    const auto cache_idx_j0 = shfl_sync(cache_idx, j);
+                    const auto cache_idx_j1 = shfl_sync(cache_idx, j+1);
+                    const auto cache_idx_j2 = shfl_sync(cache_idx, j+2);
+                    const auto cache_idx_j3 = shfl_sync(cache_idx, j+3);
+
+                    at::acc_type<cache_t, true> grad_indice_weight0 = 0.0;
+                    at::acc_type<cache_t, true> grad_indice_weight1 = 0.0;
+                    at::acc_type<cache_t, true> grad_indice_weight2 = 0.0;
+                    at::acc_type<cache_t, true> grad_indice_weight3 = 0.0;
+
+                    [[maybe_unused]] const auto weight_row0 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j0], D);
+                    [[maybe_unused]] const auto weight_row1 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j1], D);
+                    [[maybe_unused]] const auto weight_row2 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j2], D);
+                    [[maybe_unused]] const auto weight_row3 = WeightRowAccessor<emb_t, at::acc_type<cache_t, true>>(&weights[offset_idx_j3], D);
+
+                    #pragma unroll kFixedMaxVecsPerThread
+                    for (int32_t vec = 0; vec < kFixedMaxVecsPerThread && (kWarpSize * vec + threadIdx.x) * kVecWidth < D; ++vec) {
+                        const int32_t d = (kWarpSize * vec + threadIdx.x) * kVecWidth;
+
+                        Vec4T<at::acc_type<cache_t, true>> weight0, weight1, weight2, weight3;
+                        if (placement == PlacementType::MANAGED_CACHING) {
+                            weight0 = (cache_idx_j0 != kCacheLocationMissing) ?
+                            Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j0][d]) :
+                            weight_row0.load(d);
+
+                            weight1 = (cache_idx_j1 != kCacheLocationMissing) ?
+                            Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j1][d]) :
+                            weight_row1.load(d);
+
+                            weight2 = (cache_idx_j2 != kCacheLocationMissing) ?
+                            Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j2][d]) :
+                            weight_row2.load(d);
+
+                            weight3 = (cache_idx_j3 != kCacheLocationMissing) ?
+                            Vec4T<at::acc_type<cache_t, true>>(&lxu_cache_weights[cache_idx_j3][d]) :
+                            weight_row3.load(d);
+                        } else {
+                            weight0 = weight_row0.load(d);
+                            weight1 = weight_row1.load(d);
+                            weight2 = weight_row2.load(d);
+                            weight3 = weight_row3.load(d);
+                        }
+
+                        grad_indice_weight0 += weight0.acc.x * grad_out[vec].acc.x + weight0.acc.y * grad_out[vec].acc.y +
+                                weight0.acc.z * grad_out[vec].acc.z + weight0.acc.w * grad_out[vec].acc.w;
+                        grad_indice_weight1 += weight1.acc.x * grad_out[vec].acc.x + weight1.acc.y * grad_out[vec].acc.y +
+                            weight1.acc.z * grad_out[vec].acc.z + weight1.acc.w * grad_out[vec].acc.w;
+                        grad_indice_weight2 += weight2.acc.x * grad_out[vec].acc.x + weight2.acc.y * grad_out[vec].acc.y +
+                            weight2.acc.z * grad_out[vec].acc.z + weight2.acc.w * grad_out[vec].acc.w;
+                        grad_indice_weight3 += weight3.acc.x * grad_out[vec].acc.x + weight3.acc.y * grad_out[vec].acc.y +
+                            weight3.acc.z * grad_out[vec].acc.z + weight3.acc.w * grad_out[vec].acc.w;
+                    }
+
+                    grad_indice_weight0 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight0);
+                    grad_indice_weight1 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight1);
+                    grad_indice_weight2 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight2);
+                    grad_indice_weight3 = warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight3);
+
+                    if (threadIdx.x == 0) {
+                        grad_indice_weights[indices_start + l_start + j] = grad_indice_weight0;
+                        grad_indice_weights[indices_start + l_start + j+1] = grad_indice_weight1;
+                        grad_indice_weights[indices_start + l_start + j+2] = grad_indice_weight2;
+                        grad_indice_weights[indices_start + l_start + j+3] = grad_indice_weight3;
+                    }
                 }
             }
             {%- endif %}
@@ -447,7 +584,7 @@ Tensor {{ mdesc }}_embedding_codegen_grad_indice_weights{{ vdesc }}_cuda(
             TORCH_WARN_ONCE("Running on CDNA architecture");
         }
     #endif
-    
+
     const auto T = D_offsets.size(0) - 1;
     TORCH_CHECK_GT(T, 0);
     // offsets = [B x T  + 1]

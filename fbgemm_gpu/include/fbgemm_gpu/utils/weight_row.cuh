@@ -536,6 +536,10 @@ class WeightRowAccessor {
   float2 qparams_ = make_float2(0.0f, 0.0f);
 
  public:
+  struct raw_load_t {
+    row_t data[4];
+  };
+
   DEVICE_INLINE
   WeightRowAccessor(const row_t* const row, const uint32_t dim)
       : row_(row), dim_(dim) {
@@ -552,6 +556,20 @@ class WeightRowAccessor {
 
   DEVICE_INLINE Vec4T<reg_t> load(const int32_t d) const {
     return dequantize_load<reg_t, row_t>(row_ + d, qparams_);
+  }
+
+  DEVICE_INLINE raw_load_t load_raw(const int32_t d) const {
+    auto* p = row_ + d;
+    return {p[0], p[1], p[2], p[3]};
+  }
+
+  template <typename T>
+  static DEVICE_INLINE raw_load_t load_raw_ptr(const T* p) {
+    return {p[0], p[1], p[2], p[3]};
+  }
+
+  DEVICE_INLINE Vec4T<reg_t> dequantize_raw(const raw_load_t& data) const {
+    return dequantize_load<reg_t>(&data.data[0], qparams_);
   }
 
   template <typename T>
