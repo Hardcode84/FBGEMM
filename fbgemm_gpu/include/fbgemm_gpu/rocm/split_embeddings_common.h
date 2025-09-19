@@ -106,11 +106,76 @@ __device__ int32_t llvm_amdgcn_raw_buffer_load_impl<int32_t>(
   int32_t soffset,
   int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.load.i32");
 
+template <>
+__device__ float llvm_amdgcn_raw_buffer_load_impl<float>(
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.load.f32");
+
+template <>
+__device__ half llvm_amdgcn_raw_buffer_load_impl<half>(
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.load.i16");
+
+template <>
+__device__ c10::Half llvm_amdgcn_raw_buffer_load_impl<c10::Half>(
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) {
+    return llvm_amdgcn_raw_buffer_load_impl<half>(srsrc, voffset * sizeof(c10::Half), 0, 0);
+}
+
 template <typename T>
 inline __device__ std::decay_t<T> llvm_amdgcn_raw_buffer_load(
   int32x4_t srsrc,
   int32_t voffset) {
     return llvm_amdgcn_raw_buffer_load_impl<std::decay_t<T>>(srsrc, voffset * sizeof(T), 0, 0);
+}
+
+template <typename T>
+__device__ void llvm_amdgcn_raw_buffer_store_impl(
+  const T vdata,
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc);
+
+template <>
+__device__ void llvm_amdgcn_raw_buffer_store_impl<float>(
+  const float vdata,
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.store.f32");
+
+template <>
+__device__ void llvm_amdgcn_raw_buffer_store_impl<half>(
+  const half vdata,
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) __asm("llvm.amdgcn.raw.buffer.store.i16");
+
+template <>
+__device__ void llvm_amdgcn_raw_buffer_store_impl<c10::Half>(
+  const c10::Half vdata,
+  int32x4_t srsrc,
+  int32_t voffset,
+  int32_t soffset,
+  int32_t glc_slc) {
+    llvm_amdgcn_raw_buffer_store_impl((half)vdata, srsrc, voffset * sizeof(c10::Half), 0, 0);
+}
+
+template <typename T>
+inline __device__ void llvm_amdgcn_raw_buffer_store(
+  const T vdata,
+  int32x4_t srsrc,
+  int32_t voffset) {
+    llvm_amdgcn_raw_buffer_store_impl<std::decay_t<T>>(vdata, srsrc, voffset * sizeof(T), 0, 0);
 }
 
 __device__ void llvm_amdgcn_raw_buffer_store_fp32(

@@ -182,6 +182,8 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
     using locs_t = {{ locs_or_addrs_type }};
     {%- endif %}
 
+    int32x4_t grad_indice_weights_buffer = amdgcn_make_buffer_resource(&grad_indice_weights[indices_start]);
+
     {%- if use_vec_blocking %}
     const int32_t num_vecs = div_round_up(D, kWarpSize * kVecWidth);
     for (int32_t vec_start = 0;
@@ -277,18 +279,31 @@ __global__ __launch_bounds__(kForwardMaxThreads) void
                 grad_indice_weight =
                     warpReduceAllSum<at::acc_type<cache_t, true>>(grad_indice_weight);
                 if (threadIdx.x == 0) {
+                    // {%- if use_vec_blocking %}
+                    // if (vec_start == 0) {
+                    //     grad_indice_weights[indices_start + l_start + j] =
+                    //         grad_indice_weight;
+                    // }
+                    // else {
+                    //     grad_indice_weights[indices_start + l_start + j] +=
+                    //         grad_indice_weight;
+                    // }
+                    // {%- else %}
+                    // grad_indice_weights[indices_start + l_start + j] =
+                    //     grad_indice_weight;
+                    // {%- endif %}
+
                     {%- if use_vec_blocking %}
                     if (vec_start == 0) {
-                        grad_indice_weights[indices_start + l_start + j] =
-                            grad_indice_weight;
+                        llvm_amdgcn_raw_buffer_store((cache_t)grad_indice_weight, grad_indice_weights_buffer, l_start + j);
                     }
                     else {
-                        grad_indice_weights[indices_start + l_start + j] +=
-                            grad_indice_weight;
+                        auto prev_grad_indice_weight = llvm_amdgcn_raw_buffer_load<cache_t>(grad_indice_weights_buffer, l_start + j);
+                        grad_indice_weight += prev_grad_indice_weight;
+                        llvm_amdgcn_raw_buffer_store((cache_t)grad_indice_weight, grad_indice_weights_buffer, l_start + j);
                     }
                     {%- else %}
-                    grad_indice_weights[indices_start + l_start + j] =
-                        grad_indice_weight;
+                    llvm_amdgcn_raw_buffer_store((cache_t)grad_indice_weight, grad_indice_weights_buffer, l_start + j);
                     {%- endif %}
                 }
             }
